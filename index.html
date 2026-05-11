@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CCTV Circuit Rewiring</title>
+    <style>
+        :root { --primary: #2563eb; --bg: #f8fafc; --text: #1e293b; --danger: #ef4444; --success: #166534; }
+        
+        html, body { 
+            overflow: hidden; width: 100%; height: 100%; margin: 0; padding: 0; 
+            position: fixed; touch-action: none; background: var(--bg);
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+
+        #app-container { 
+            display: flex; flex-direction: column; width: 100vw; height: 100vh; 
+            padding: 10px; box-sizing: border-box; 
+        }
+
+        header { text-align: center; margin-bottom: 10px; flex-shrink: 0; }
+        h1 { margin: 0; font-size: 1.4rem; color: var(--primary); }
+        .instructions { margin: 5px 0; font-size: 0.9rem; color: #475569; }
+
+        .toolbar { 
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; 
+            margin-bottom: 10px; flex-shrink: 0; width: 100%; max-width: 600px;
+            margin-left: auto; margin-right: auto;
+        }
+
+        .btn { 
+            padding: 10px 2px; border: 2px solid #e2e8f0; border-radius: 8px; 
+            background: white; cursor: pointer; font-weight: bold; font-size: 0.8rem; 
+        }
+
+        .btn.active { border-color: var(--primary); background: #eff6ff; color: var(--primary); }
+        .btn-check { background: var(--primary); color: white; border-color: var(--primary); }
+
+        .viewport { 
+            position: relative; flex-grow: 1; background: #fff; border-radius: 12px; 
+            overflow: hidden; border: 1px solid #e2e8f0; display: flex; 
+            align-items: center; justify-content: center;
+        }
+
+        #base-img { width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+        canvas { position: absolute; z-index: 10; cursor: crosshair; touch-action: none; }
+
+        #banner { 
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); 
+            width: 80%; z-index: 100; padding: 12px; border-radius: 8px; 
+            display: none; text-align: center; font-weight: bold; pointer-events: none;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
+        }
+
+        /* Using !important to override any lingering display styles */
+        .success-msg { display: block !important; background: #dcfce7 !important; color: var(--success) !important; border: 1px solid #bbf7d0; }
+        .error-msg { display: block !important; background: #fee2e2 !important; color: #991b1b !important; border: 1px solid #fecaca; }
+    </style>
+</head>
+<body>
+
+<div id="app-container">
+    <header>
+        <h1>Complete the CCTV Circuit</h1>
+        <p class="instructions">Draw lines to complete the circuit If one recording unit fails, the other can still function. If the storage unit or bulb fails, the circuit becomes opened.</p>
+    </header>
+
+    <div class="toolbar">
+        <button id="drawMode" class="btn active" onclick="setTool('draw')">✏️ Draw</button>
+        <button id="eraseMode" class="btn" onclick="setTool('erase')">🧼 Eraser</button>
+        <button class="btn btn-check" onclick="validateCircuit()">✔️ Check</button>
+        <button class="btn" onclick="resetCanvas()">🗑️ Clear</button>
+    </div>
+
+    <div class="viewport" id="vBox">
+        <img id="base-img" src="https://i.ibb.co/7sd5RLB/Screenshot-2026-05-11-124408.png">
+        <canvas id="circuitCanvas"></canvas>
+    </div>
+
+    <div id="banner"></div>
+</div>
+
+<script>
+const canvas = document.getElementById('circuitCanvas');
+const ctx = canvas.getContext('2d');
+const img = document.getElementById('base-img');
+const banner = document.getElementById('banner');
+const vBox = document.getElementById('vBox');
+
+const ANCHORS = {
+    PS_P: {x: 68.6, y: 39.8}, PS_N: {x: 76.5, y: 36.8},
+    RU1_L: {x: 35.8, y: 32.5}, RU1_R: {x: 47.5, y: 28.5},
+    RU2_L: {x: 38.3, y: 53.5}, RU2_R: {x: 50.1, y: 49.3},
+    SU_L: {x: 59.9, y: 28.4}, SU_R: {x: 71.9, y: 24.3},
+    B_L: {x: 78.6, y: 13.0}, B_R: {x: 84.8, y: 14.5}
+};
+
+let paths = [];
+let currentPath = [];
+let isDrawing = false;
+let currentTool = 'draw';
+
+// THE FIX: Centralized Force-Hide
+function clearUIBanner() {
+    banner.className = '';
+    banner.style.display = 'none';
+    banner.textContent = '';
+}
+
+function setTool(t) {
+    currentTool = t;
+    document.getElementById('drawMode').classList.toggle('active', t === 'draw');
+    document.getElementById('eraseMode').classList.toggle('active', t === 'erase');
+    clearUIBanner(); 
+}
+
+function sync() {
+    const imgRatio = img.naturalWidth / img.naturalHeight;
+    const boxWidth = vBox.clientWidth;
+    const boxHeight = vBox.clientHeight;
+    const boxRatio = boxWidth / boxHeight;
+    let cWidth, cHeight;
+    if (boxRatio > imgRatio) {
+        cHeight = boxHeight; cWidth = boxHeight * imgRatio;
+    } else {
+        cWidth = boxWidth; cHeight = boxWidth / imgRatio;
+    }
+    canvas.width = cWidth; canvas.height = cHeight;
+    render();
+}
+window.addEventListener('resize', sync);
+img.onload = sync;
+
+function getPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    const cx = (e.touches && e.touches[0]) ? e.touches[0].clientX : e.clientX;
+    const cy = (e.touches && e.touches[0]) ? e.touches[0].clientY : e.clientY;
+    return { px: ((cx - rect.left) / canvas.width) * 100, py: ((cy - rect.top) / canvas.height) * 100 };
+}
+
+function render() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const lw = Math.max(4, canvas.width / 180);
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    
+    paths.forEach(p => {
+        ctx.strokeStyle = "#1e293b"; ctx.lineWidth = lw; ctx.beginPath();
+        ctx.moveTo((p[0].px/100)*canvas.width, (p[0].py/100)*canvas.height);
+        for(let i=1; i<p.length; i++) ctx.lineTo((p[i].px/100)*canvas.width, (p[i].py/100)*canvas.height);
+        ctx.stroke();
+    });
+
+    if(isDrawing && currentPath.length > 1) {
+        ctx.strokeStyle = currentTool === 'erase' ? "rgba(239, 68, 68, 0.5)" : "#2563eb";
+        ctx.lineWidth = lw; ctx.beginPath();
+        ctx.moveTo((currentPath[0].px/100)*canvas.width, (currentPath[0].py/100)*canvas.height);
+        for(let i=1; i<currentPath.length; i++) ctx.lineTo((currentPath[i].px/100)*canvas.width, (currentPath[i].py/100)*canvas.height);
+        ctx.stroke();
+    }
+
+    // Fully Transparent Anchors
+    Object.values(ANCHORS).forEach(c => {
+        ctx.fillStyle = "rgba(0, 0, 0, 0)"; 
+        ctx.beginPath();
+        ctx.arc((c.x/100)*canvas.width, (c.y/100)*canvas.height, lw*1.3, 0, Math.PI*2);
+        ctx.fill(); 
+    });
+}
+
+// Banner disappears the INSTANT the user interacts with the canvas
+const startEv = (e) => { 
+    clearUIBanner(); 
+    isDrawing = true; 
+    currentPath = [getPos(e)]; 
+};
+
+const moveEv = (e) => { if(isDrawing) { currentPath.push(getPos(e)); render(); } };
+
+const endEv = () => {
+    if(isDrawing && currentPath.length > 2) {
+        if(currentTool === 'erase') {
+            const last = currentPath[currentPath.length-1];
+            paths = paths.filter(p => !p.some(pt => Math.hypot(pt.px-last.px, pt.py-last.py) < 7));
+        } else { paths.push(currentPath); }
+    }
+    isDrawing = false; currentPath = []; render();
+};
+
+canvas.addEventListener('mousedown', startEv);
+window.addEventListener('mousemove', moveEv);
+window.addEventListener('mouseup', endEv);
+canvas.addEventListener('touchstart', (e) => { e.preventDefault(); startEv(e); }, {passive:false});
+canvas.addEventListener('touchmove', (e) => { e.preventDefault(); moveEv(e); }, {passive:false});
+canvas.addEventListener('touchend', endEv);
+
+function getAnchor(pt, r = 12) {
+    for (let id in ANCHORS) if (Math.hypot(ANCHORS[id].x - pt.px, ANCHORS[id].y - pt.py) < r) return id;
+    return null;
+}
+
+function validateCircuit() {
+    // Keeping your original logic as requested
+    const adj = {};
+    Object.keys(ANCHORS).forEach(n => adj[n] = new Set());
+    const components = [['PS_P','PS_N'], ['SU_L','SU_R'], ['B_L','B_R']];
+    paths.forEach(p => {
+        const s = getAnchor(p[0]), e = getAnchor(p[p.length-1]);
+        if(s && e && s !== e) { adj[s].add(e); adj[e].add(s); }
+    });
+    const getConnectivity = (startNode, includeInternals = true) => {
+        const visited = new Set();
+        const stack = [startNode];
+        while(stack.length) {
+            const curr = stack.pop();
+            if(!visited.has(curr)) {
+                visited.add(curr);
+                adj[curr].forEach(n => stack.push(n));
+                if(includeInternals) {
+                    components.forEach(([u,v]) => {
+                        if(curr === u) stack.push(v);
+                        if(curr === v) stack.push(u);
+                    });
+                }
+            }
+        }
+        return visited;
+    };
+    const railA = getConnectivity('RU1_L', false).has('RU2_L');
+    const railB = getConnectivity('RU1_R', false).has('RU2_R');
+    const fullNet = getConnectivity('PS_P', true);
+    const hasSU = fullNet.has('SU_L') || fullNet.has('SU_R');
+    const hasBulb = fullNet.has('B_L') || fullNet.has('B_R');
+    const hitsA = Array.from(getConnectivity('PS_P', true)).some(n => n.includes('_L') && n.startsWith('RU'));
+    const hitsB = Array.from(getConnectivity('PS_N', true)).some(n => n.includes('_R') && n.startsWith('RU'));
+
+    if (railA && railB && hasSU && hasBulb && hitsA && hitsB) {
+        banner.textContent = "Success! Circuit is connected correctly.";
+        banner.className = "success-msg";
+    } else {
+        banner.textContent = "Logic Error: Check Parallel/Series connections.";
+        banner.className = "error-msg";
+    }
+}
+
+function resetCanvas() { 
+    paths = []; 
+    clearUIBanner(); // Force clear banner
+    render(); 
+}
+</script>
+</body>
+</html>
